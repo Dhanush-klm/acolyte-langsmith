@@ -373,7 +373,7 @@ export default function ChatPage() {
     }
   });
 
-  const startScenario = async (type: 'begin' | 'instructions') => {
+  const startScenario = async (type: 'Begin' | 'Instructions') => {
     const startMessage = type;
     setInput(startMessage);
     
@@ -438,7 +438,7 @@ export default function ChatPage() {
   const handleBeginClick = () => {
     setShowButtons(false);
     setInstructionsShown(false);
-    setInput('begin');
+    setInput('Begin');
     setTimeout(() => {
       formRef.current?.requestSubmit();
     }, 0);
@@ -447,7 +447,7 @@ export default function ChatPage() {
   const handleInstructionsClick = () => {
     setShowButtons(false);
     setInstructionsShown(true);
-    setInput('instructions');
+    setInput('Instructions');
     setTimeout(() => {
       formRef.current?.requestSubmit();
     }, 0);
@@ -456,7 +456,7 @@ export default function ChatPage() {
   const handlePostInstructionsBegin = () => {
     setShowButtons(false);
     setInstructionsShown(false);
-    setInput('begin');
+    setInput('Begin');
     setTimeout(() => {
       formRef.current?.requestSubmit();
     }, 0);
