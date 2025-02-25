@@ -576,7 +576,7 @@ export default function ChatPage() {
                       : 'bg-white border border-slate-200'
                   }`}
                 >
-                  <div className="text-sm sm:text-base prose prose-slate dark:prose-invert max-w-none">
+                  <div className="text-sm sm:text-base prose prose-slate max-w-none">
                     <ReactMarkdown>{m.content}</ReactMarkdown>
                   </div>
                   {m.role === 'assistant' && (
@@ -629,7 +629,7 @@ export default function ChatPage() {
                 value={input}
                 onChange={customHandleInputChange}
                 placeholder="Type your message here..."
-                className="flex-1 p-2 sm:p-3 text-sm sm:text-base border border-slate-200 rounded-md focus:outline-none focus:border-[#4FD1C5] focus:ring-1 focus:ring-[#4FD1C5]"
+                className="flex-1 p-2 sm:p-3 text-sm sm:text-base border border-slate-200 rounded-md focus:outline-none focus:border-[#4FD1C5] focus:ring-1 focus:ring-[#4FD1C5] bg-white text-slate-900"
               />
               <VoiceRecorder
                 onTranscription={(text) => {
