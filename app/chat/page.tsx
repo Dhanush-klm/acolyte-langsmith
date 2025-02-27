@@ -369,15 +369,23 @@ export default function ChatPage() {
     },
     onFinish: (message) => {
       if (message.content.trim()) {
+        // Generate a trace ID for this completion
+        const traceId = crypto.randomUUID();
+        
+        console.log(`📊 Tracing completed response [TraceID: ${traceId}]`);
+        
+        // Send trace information back to the server
         fetch('/api/chat', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            'X-Trace-ID': traceId
           },
           body: JSON.stringify({
             traceResponse: true,
             userId,
             assistantResponse: message.content,
+            traceId
           }),
         });
       }
