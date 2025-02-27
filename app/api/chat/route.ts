@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { OpenAI } from 'openai';
 import { wrapOpenAI } from 'langsmith/wrappers';
 import { traceable } from 'langsmith/traceable';
+import { AISDKExporter } from 'langsmith/vercel';
 
 // Initialize OpenAI client with LangSmith wrapper
 const openai = wrapOpenAI(new OpenAI({
@@ -85,17 +86,23 @@ Drug pricing benchmarks are essential in pharmacy benefits consulting as they de
 `
 };
 
-// Function to get embedding for a query
-async function getQueryEmbedding(query: string): Promise<number[]> {
+// Wrap getQueryEmbedding with traceable
+const getQueryEmbedding = traceable(async (query: string): Promise<number[]> => {
   const response = await openai.embeddings.create({
     model: "text-embedding-ada-002",
     input: query,
   });
   return response.data[0].embedding;
-}
+}, {
+  name: "Query Embedding Generation",
+  metadata: {
+    environment: process.env.VERCEL_ENV || 'development',
+    model: "text-embedding-ada-002"
+  }
+});
 
-// Function to find similar content from database
-async function findSimilarContent(embedding: number[]): Promise<string> {
+// Wrap findSimilarContent with traceable
+const findSimilarContent = traceable(async (embedding: number[]): Promise<string> => {
   // Format the embedding array as a PostgreSQL vector string
   const vectorString = `[${embedding.join(',')}]`;
   
@@ -109,7 +116,123 @@ async function findSimilarContent(embedding: number[]): Promise<string> {
   
   const result = await pool.query(query, [vectorString]);
   return result.rows.map(row => row.contents).join('\n\n');
-}
+}, {
+  name: "Similar Content Retrieval",
+  metadata: {
+    environment: process.env.VERCEL_ENV || 'development',
+    dataSource: 'postgres',
+    similarityThreshold: 0.7,
+    maxResults: 5
+  }
+});
+
+// Add tracing for message processing
+const processMessages = traceable(async (
+  messages: Message[], 
+  userQuery: string, 
+  persona: Persona, 
+  embedding: number[],
+  similarContent: string,
+  userId: string
+) => {
+  const systemPrompt = `${SYSTEM_PROMPTS[persona]}
+
+Documentation Context: ${similarContent}`;
+
+  const updatedMessages = [
+    { role: 'system' as const, content: systemPrompt },
+    ...messages.slice(0, -1).map((msg: Message) => ({
+      role: msg.role as 'system' | 'user' | 'assistant',
+      content: msg.content
+    })),
+    { role: 'user' as const, content: userQuery }
+  ];
+
+  const result = await streamText({
+    model: mem0('gpt-4o-mini', {
+      user_id: userId,
+    }),
+    messages: updatedMessages,
+    experimental_telemetry: AISDKExporter.getSettings({
+      runName: 'chat-streaming',
+      metadata: { 
+        persona,
+        messageCount: messages.length,
+        userId
+      }
+    })
+  });
+
+  // Store the messages for memory
+  await addMemories(updatedMessages as any, {
+    user_id: userId,
+    mem0ApiKey: process.env.MEM0_API_KEY,
+  });
+
+  return { result, updatedMessages };
+}, {
+  name: "Message Processing",
+  metadata: {
+    environment: process.env.VERCEL_ENV || 'development',
+    runtime: 'edge'
+  }
+});
+
+// Add greeting handler with tracing
+const handleGreeting = traceable(async (
+  userQuery: string,
+  previousMessages: Message[],
+  persona: Persona,
+  userId: string
+) => {
+  const greetingResponse = getGreetingResponse();
+  
+  const result = await streamText({
+    model: mem0('gpt-4o-mini', {
+      user_id: userId,
+    }),
+    messages: [
+      {
+        role: 'system',
+        content: SYSTEM_PROMPTS[persona],
+      },
+      ...previousMessages,
+      {
+        role: 'user',
+        content: userQuery
+      },
+      {
+        role: 'assistant',
+        content: greetingResponse
+      }
+    ],
+    experimental_telemetry: AISDKExporter.getSettings({
+      runName: 'greeting-response',
+      metadata: { 
+        responseType: 'greeting',
+        userId
+      }
+    })
+  });
+
+  // Add greeting to memories
+  const greetingMessages = [
+    { role: 'user', content: userQuery },
+    { role: 'assistant', content: greetingResponse }
+  ];
+  await addMemories([...previousMessages, ...greetingMessages] as any, {
+    user_id: userId,
+    mem0ApiKey: process.env.MEM0_API_KEY,
+  });
+
+  return result;
+}, {
+  name: "Greeting Handler",
+  metadata: {
+    environment: process.env.VERCEL_ENV || 'development',
+    responseType: 'greeting'
+  }
+});
 
 // Function to check if message is a greeting
 function isGreeting(query: string): boolean {
@@ -164,7 +287,7 @@ const queryStore: Record<string, { query: string, timestamp: number }> = {};
 
 export async function POST(req: Request) {
   const totalStartTime = performance.now();
-  const traceId = crypto.randomUUID(); // Generate unique trace ID
+  const traceId = crypto.randomUUID();
   
   try {
     console.log(`🚀 Starting request processing [TraceID: ${traceId}]...`);
@@ -203,48 +326,16 @@ export async function POST(req: Request) {
 
     // Check if the query is a greeting
     if (isGreeting(userQuery)) {
-      console.log('👋 Greeting detected, sending default response');
-      const greetingResponse = getGreetingResponse();
+      console.log(`👋 Greeting detected, sending default response [TraceID: ${traceId}]`);
+      const result = await handleGreeting(userQuery, previousMessages, persona, userId);
       
-      // Create a stream response for greeting
-      const result = await streamText({
-        model: mem0('gpt-4o-mini', {
-          user_id: userId,
-        }),
-        messages: [
-          {
-            role: 'system',
-            content: SYSTEM_PROMPTS[persona], // Use persona-specific prompt even for greetings
-          },
-          ...previousMessages,
-          {
-            role: 'user',
-            content: userQuery
-          },
-          {
-            role: 'assistant',
-            content: greetingResponse
-          }
-        ],
-      });
-
-      // Add greeting to memories
-      const greetingMessages = [
-        { role: 'user', content: userQuery },
-        { role: 'assistant', content: greetingResponse }
-      ];
-      await addMemories([...previousMessages, ...greetingMessages], {
-        user_id: userId,
-        mem0ApiKey: process.env.MEM0_API_KEY,
-      });
-
-      console.log('👋 Greeting response sent');
+      console.log(`👋 Greeting response sent [TraceID: ${traceId}]`);
       return result.toDataStreamResponse();
     }
 
     // If not a greeting, proceed with normal processing
-    console.log('💬 Processing regular query...');
-    console.log(`🎭 Using ${persona} persona`);
+    console.log(`💬 Processing regular query... [TraceID: ${traceId}]`);
+    console.log(`🎭 Using ${persona} persona [TraceID: ${traceId}]`);
 
     // Generate embedding directly from the original query
     const embedding = await getQueryEmbedding(userQuery);
@@ -254,54 +345,32 @@ export async function POST(req: Request) {
 
     // Start response generation
     const responseStartTime = performance.now();
-    console.log('💭 Starting response generation...');
+    console.log(`💭 Starting response generation... [TraceID: ${traceId}]`);
 
-    // Get the appropriate system prompt based on persona
-    const systemPrompt = `${SYSTEM_PROMPTS[persona]}
-
-Documentation Context: ${similarContent}`;
-
-    const updatedMessages = [
-      { role: 'system' as const, content: systemPrompt },
-      ...previousMessages.map((msg: Message) => ({
-        role: msg.role as 'system' | 'user' | 'assistant',
-        content: msg.content
-      })),
-      { role: 'user' as const, content: userQuery }
-    ];
-
-    // Log the start of streaming
-    console.log('📡 Initiating response stream...');
-    
-    // Stream the response using ai-sdk
-    const result = await streamText({
-      model: mem0('gpt-4o-mini', {
-        user_id: userId,
-      }),
-      messages: updatedMessages,
-    });
+    // Process messages and get response
+    const { result } = await processMessages(
+      messages, 
+      userQuery, 
+      persona, 
+      embedding, 
+      similarContent,
+      userId
+    );
 
     const responseEndTime = performance.now();
     const streamInitTime = (responseEndTime - responseStartTime).toFixed(2);
     const totalTime = (responseEndTime - totalStartTime).toFixed(2);
     
-    console.log(`⏱️ Stream initialization time: ${streamInitTime}ms`);
-    console.log(`⌛ Total processing time: ${totalTime}ms`);
+    console.log(`⏱️ Stream initialization time: ${streamInitTime}ms [TraceID: ${traceId}]`);
+    console.log(`⌛ Total processing time: ${totalTime}ms [TraceID: ${traceId}]`);
 
-    // Add memories after streaming starts
-    const finalMessages = [...updatedMessages];
-    await addMemories(finalMessages, {
-      user_id: userId,
-      mem0ApiKey: process.env.MEM0_API_KEY,
-    });
-
-    console.log('✅ Request processing complete!');
+    console.log(`✅ Request processing complete! [TraceID: ${traceId}]`);
     return result.toDataStreamResponse();
   } catch (error) {
     const errorTime = performance.now();
     const totalErrorTime = (errorTime - totalStartTime).toFixed(2);
-    console.error(`❌ Error in chat route (after ${totalErrorTime}ms):`, error);
-    return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
+    console.error(`❌ Error in chat route (after ${totalErrorTime}ms) [TraceID: ${traceId}]:`, error);
+    return new Response(JSON.stringify({ error: 'Internal Server Error', traceId }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
