@@ -354,6 +354,7 @@ export default function ChatPage() {
   const [instructionsShown, setInstructionsShown] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
   const [currentTraceId, setCurrentTraceId] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const { messages, input, handleInputChange, handleSubmit, isLoading, reload, setMessages, setInput } = useChat({
     api: '/api/chat',
@@ -377,15 +378,20 @@ export default function ChatPage() {
     },
     onFinish: async (message) => {
       if (message.content.trim()) {
-        // Send the complete answer back to the backend
-        await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            completeAnswer: message.content,
-            userId
-          }),
-        });
+        try {
+          // Ensure this is awaited to complete before allowing new questions
+          await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              completeAnswer: message.content,
+              userId: userId // Make sure userId matches exactly what's stored on backend
+            }),
+          });
+          console.log('Successfully sent answer back for tracing');
+        } catch (error) {
+          console.error('Failed to send answer for tracing:', error);
+        }
       }
     },
     onError: (error) => {
@@ -422,14 +428,16 @@ export default function ChatPage() {
 
   const enhancedSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    if (!input.trim() || isSubmitting) return;
 
+    setIsSubmitting(true);
     try {
-      // Remove the logging call
       await handleSubmit(e);
     } catch (error) {
       console.error('Error submitting question:', error);
       setError('Failed to process your request');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
