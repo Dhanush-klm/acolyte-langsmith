@@ -356,63 +356,24 @@ export async function POST(req: Request) {
         }));
       }
       
-      console.log('✅ Found stored data:');
-      console.log(`- Query: "${tempStore.query.substring(0, 50)}..."`);
-      console.log(`- Context length: ${tempStore.similarContent.length} characters`);
-      
-      // Create a nested tracing structure
-      const conversationTrace = await traceable(async () => {
-        // First, analyze just the answer
-        const answerAnalysis = await traceable(async () => {
-          console.log('💬 Analyzing answer:');
-          console.log(`- Length: ${body.completeAnswer.length} characters`);
-          console.log(`- Preview: "${body.completeAnswer.substring(0, 100)}..."`);
-          
-          // You can do additional answer analysis here if needed
-          const sentenceCount = body.completeAnswer.split(/[.!?]+/).length - 1;
-          const wordCount = body.completeAnswer.split(/\s+/).length;
-          
-          return {
-            answerLength: body.completeAnswer.length,
-            sentenceCount,
-            wordCount,
-            previewText: body.completeAnswer.substring(0, 150)
-          };
-        }, {
-          name: "AI Answer Analysis",
-          metadata: {
-            component: 'answer-analysis',
-            analysisType: 'text-metrics'
-          }
-        })();
+      // Process the complete conversation - this will create the parent trace
+      // that matches what we see in the LangSmith screenshot
+      const conversationResult = await traceable(async () => {
+        // Log the answer details
+        console.log(`📝 Query: "${tempStore.query?.substring(0, 50)}..."`);
+        console.log(`📚 Context length: ${tempStore.similarContent?.length} characters`);
+        console.log(`💬 Answer length: ${body.completeAnswer.length} characters`);
         
-        // Then log all components together
-        console.log('\n📊 FINAL CONVERSATION COMPONENTS:');
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log('📝 USER QUERY:');
-        console.log(tempStore.query);
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log('📚 CONTEXT:');
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log('💬 AI ANSWER:');
-        console.log(body.completeAnswer);
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-        
-        return { 
-          query: tempStore.query, 
-          contextLength: tempStore.similarContent?.length || 0, 
+        return {
+          query: tempStore.query,
+          context: tempStore.similarContent?.substring(0, 100) + "...",
+          answer: body.completeAnswer.substring(0, 100) + "...",
           answerLength: body.completeAnswer.length,
-          answerMetrics: answerAnalysis
+          contextLength: tempStore.similarContent?.length || 0
         };
       }, {
-        name: "Complete Conversation Trace",
-        metadata: {
-          environment: process.env.VERCEL_ENV || 'development',
-          component: 'conversation-processing'
-        }
+        name: "Complete Conversation Trace"
       })();
-      
-      console.log('✅ Successfully traced conversation');
       
       // Clear the temporary store
       tempStore = {};
@@ -424,47 +385,56 @@ export async function POST(req: Request) {
       }));
     }
     
-    // Case 2: Initial request - process and store
+    // Case 2: Initial request - process and stream
     const { messages, userId, persona: requestPersona } = body;
     const userQuery = messages[messages.length - 1].content;
     const persona = requestPersona || 'general';
     
-    console.log('\n=== Processing Initial Request ===');
-    console.log(`📝 New query: "${userQuery.substring(0, 100)}..."`);
+    // This will be the parent trace that appears at the top of the hierarchy
+    const result = await traceable(async () => {
+      console.log('\n=== Processing Initial Request ===');
+      console.log(`📝 New query: "${userQuery.substring(0, 100)}..."`);
 
-    // Generate embeddings and get similar content
-    const embedding = await getQueryEmbedding(userQuery);
-    const similarContent = await findSimilarContent(embedding);
-    console.log(`📚 Retrieved similar content: ${similarContent.length} characters`);
-    
-    // Store query and context for later tracing
-    tempStore = {
-      query: userQuery,
-      similarContent: similarContent,
-      userId: userId
-    };
-    console.log('💾 Stored query and context for later tracing');
-    
-    // Process messages and stream response
-    const { result } = await processMessages(
-      messages, 
-      userQuery, 
-      persona, 
-      embedding, 
-      similarContent,
-      userId
-    );
-    
-    console.log('✅ Request processed, streaming response');
-    console.log('=== End Processing Initial Request ===\n');
-    
-    return new Response(result.toDataStreamResponse().body, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive'
+      // Generate embeddings - shows up as a child trace
+      const embedding = await getQueryEmbedding(userQuery);
+      
+      // Get similar content - shows up as another child trace
+      const similarContent = await findSimilarContent(embedding);
+      console.log(`📚 Retrieved similar content: ${similarContent.length} characters`);
+      
+      // Store query and context for later tracing
+      tempStore = {
+        query: userQuery,
+        similarContent: similarContent,
+        userId: userId
+      };
+      console.log('💾 Stored query and context for later tracing');
+      
+      // Process messages and stream response
+      const { result } = await processMessages(
+        messages, 
+        userQuery, 
+        persona, 
+        embedding, 
+        similarContent,
+        userId
+      );
+      
+      console.log('✅ Request processed, streaming response');
+      console.log('=== End Processing Initial Request ===\n');
+      
+      return result;
+    }, {
+      name: "Message Processing",
+      metadata: {
+        userId,
+        messageCount: messages.length,
+        persona
       }
-    });
+    })();
+
+    // Return the response outside of the traceable function
+    return result.toDataStreamResponse();
   } catch (error) {
     console.error('❌ Error processing request:', error);
     // Clear tempStore in case of error
