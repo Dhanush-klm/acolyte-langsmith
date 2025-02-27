@@ -290,6 +290,35 @@ const traceCompleteConversation = traceable(async (query: string, context: strin
   }
 });
 
+// Add this new traceable function to log all three components
+const logFinalConversationState = traceable(async (query: string, context: string, answer: string) => {
+  console.log('\n📊 FINAL CONVERSATION COMPONENTS:');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('📝 USER QUERY:');
+  console.log(query);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('📚 CONTEXT:');
+  console.log(context.length > 300 ? context.substring(0, 300) + '...' : context);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('💬 AI ANSWER:');
+  console.log(answer);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+  
+  return { 
+    query, 
+    contextLength: context.length, 
+    answerLength: answer.length,
+    answerSample: answer.substring(0, 100) + '...'
+  };
+}, {
+  name: "Final Conversation State Log",
+  metadata: {
+    environment: process.env.VERCEL_ENV || 'development',
+    component: 'chat-completion',
+    logType: 'detailed-components'
+  }
+});
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -319,7 +348,14 @@ export async function POST(req: Request) {
         body.completeAnswer
       );
       
-      console.log('✅ Successfully traced conversation');
+      // Add additional detailed logging of all three components
+      await logFinalConversationState(
+        tempStore.query,
+        tempStore.similarContent,
+        body.completeAnswer
+      );
+      
+      console.log('✅ Successfully traced and logged conversation');
       
       // Clear the temporary store
       tempStore = {};
