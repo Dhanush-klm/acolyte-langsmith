@@ -264,24 +264,28 @@ function isValidPersona(persona: any): persona is Persona {
   return ['general', 'roleplay'].includes(persona);
 }
 
-// Update the queryStore to include similarContent
-const queryStore: Record<string, { query: string, similarContent: string, timestamp: number }> = {};
+// Create a trace store to link initial requests with final responses
+const traceStore: Record<string, { 
+  traceId: string,
+  userId: string, 
+  query: string, 
+  similarContent: string,
+  startTime: number
+}> = {};
 
 // Traceable function for logging final responses with similarContent
 const traceResponse = traceable(
-  async (userId: string, userQuery: string, assistantResponse: string, similarContent: string, traceId?: string) => {
-    console.log(`🔍 Tracing response in LangSmith [TraceID: ${traceId || 'none'}]`);
-    console.log(`🔹 User ID: ${userId}`);
+  async (userId: string, userQuery: string, assistantResponse: string, similarContent: string, parentTraceId?: string) => {
+    console.log(`🔍 Tracing complete response [Parent TraceID: ${parentTraceId || 'none'}]`);
     console.log(`🔹 User Query: "${userQuery}"`);
-    console.log(`🔹 Similar Content Length: ${similarContent.length} characters`);
-    console.log(`🔹 Assistant Response Length: ${assistantResponse.length} characters`);
+    console.log(`🔹 Assistant Response: "${assistantResponse.substring(0, 100)}..."`);
     
     return { 
       userId, 
       userQuery, 
       assistantResponse, 
       similarContentLength: similarContent.length,
-      traceId 
+      parentTraceId 
     };
   },
   { 
@@ -295,38 +299,61 @@ const traceResponse = traceable(
 );
 
 export async function POST(req: Request) {
+  // Generate a trace ID for this request to link initial request with final response
+  const requestTraceId = req.headers.get('x-trace-id') || crypto.randomUUID();
   const totalStartTime = performance.now();
-  const traceId = crypto.randomUUID();
   
   try {
-    console.log(`🚀 Starting request processing [TraceID: ${traceId}]...`);
+    console.log(`🚀 Starting request processing [TraceID: ${requestTraceId}]...`);
     const body = await req.json();
     
     // Case 1: This is a tracing request after streaming is complete
     if (body.traceResponse === true) {
-      const { userId, assistantResponse } = body;
+      const { userId, assistantResponse, traceId: frontendTraceId } = body;
       
-      // Retrieve the original query and similar content from our store
-      const storedData = queryStore[userId];
-      const userQuery = storedData?.query || "Unknown query";
-      const similarContent = storedData?.similarContent || "";
+      // Try to find the original trace info from our store
+      const originalTraceInfo = Object.values(traceStore).find(
+        info => info.userId === userId && Date.now() - info.startTime < 300000 // 5 minute window
+      );
+      
+      if (!originalTraceInfo) {
+        console.warn(`⚠️ Could not find original trace for userId: ${userId}`);
+        return new Response(JSON.stringify({ 
+          status: 'error', 
+          message: 'Original trace not found'
+        }));
+      }
+      
+      // Extract original trace data
+      const { traceId: originalTraceId, query: userQuery, similarContent } = originalTraceInfo;
       
       // Log what we're tracing
-      console.log(`📝 Tracing complete response [TraceID: ${traceId}]`);
+      console.log(`📝 Tracing complete response`);
+      console.log(`🔹 Original TraceID: ${originalTraceId}`);
+      console.log(`🔹 Frontend TraceID: ${frontendTraceId || 'none'}`);
       console.log(`🔹 Query: "${userQuery.substring(0, 100)}${userQuery.length > 100 ? '...' : ''}"`);
-      console.log(`🔹 Similar Content Length: ${similarContent.length} characters`);
-      console.log(`🔹 Assistant Response Length: ${assistantResponse.length} characters`);
+      console.log(`🔹 Response Length: ${assistantResponse.length} characters`);
       
-      // Clear the stored query
-      delete queryStore[userId];
+      // Remove from trace store
+      delete traceStore[originalTraceId];
       
-      // Trace the completed response in LangSmith with all data
-      await traceResponse(userId, userQuery, assistantResponse, similarContent, traceId);
+      // Trace the completed response in LangSmith with parent trace ID
+      await traceResponse(
+        userId, 
+        userQuery, 
+        assistantResponse, 
+        similarContent, 
+        originalTraceId  // Link to original trace
+      );
       
-      return new Response(JSON.stringify({ status: 'traced', traceId }));
+      return new Response(JSON.stringify({ 
+        status: 'traced', 
+        originalTraceId,
+        frontendTraceId 
+      }));
     }
     
-    // Case 2: Normal chat processing - store the query
+    // Case 2: Normal chat processing - store the query and trace info
     const { messages, userId } = body;
     const userQuery = messages[messages.length - 1].content;
     
@@ -336,23 +363,29 @@ export async function POST(req: Request) {
 
     // Check if query is a greeting
     if (isGreeting(userQuery)) {
-      console.log(`👋 Greeting detected, sending default response [TraceID: ${traceId}]`);
+      console.log(`👋 Greeting detected, sending default response [TraceID: ${requestTraceId}]`);
       
-      // Store empty similar content for greetings
-      queryStore[userId] = {
+      // Store trace info for greetings too
+      traceStore[requestTraceId] = {
+        traceId: requestTraceId,
+        userId,
         query: userQuery,
         similarContent: "",
-        timestamp: Date.now()
+        startTime: Date.now()
       };
       
       const result = await handleGreeting(userQuery, previousMessages, persona, userId);
       
-      console.log(`👋 Greeting response sent [TraceID: ${traceId}]`);
-      return result.toDataStreamResponse();
+      // Set trace ID in response headers
+      const response = result.toDataStreamResponse();
+      response.headers.set('x-trace-id', requestTraceId);
+      
+      console.log(`👋 Greeting response sent [TraceID: ${requestTraceId}]`);
+      return response;
     }
 
     // Regular query processing
-    console.log(`💬 Processing regular query... [TraceID: ${traceId}]`);
+    console.log(`📝 Processing query [TraceID: ${requestTraceId}]: "${userQuery.substring(0, 100)}${userQuery.length > 100 ? '...' : ''}"`);
     
     // Generate embedding directly from the original query
     const embedding = await getQueryEmbedding(userQuery);
@@ -360,11 +393,13 @@ export async function POST(req: Request) {
     // Find similar content from the database
     const similarContent = await findSimilarContent(embedding);
     
-    // Store the user query and similar content for later retrieval when tracing
-    queryStore[userId] = {
+    // Store trace info
+    traceStore[requestTraceId] = {
+      traceId: requestTraceId,
+      userId,
       query: userQuery,
       similarContent: similarContent,
-      timestamp: Date.now()
+      startTime: Date.now()
     };
     
     // Process messages and get response
@@ -380,15 +415,25 @@ export async function POST(req: Request) {
     const responseEndTime = performance.now();
     const totalTime = (responseEndTime - totalStartTime).toFixed(2);
     
-    console.log(`⌛ Total processing time: ${totalTime}ms [TraceID: ${traceId}]`);
-    console.log(`✅ Request processing complete! [TraceID: ${traceId}]`);
+    console.log(`⌛ Total processing time: ${totalTime}ms [TraceID: ${requestTraceId}]`);
+    console.log(`✅ Request processing complete! [TraceID: ${requestTraceId}]`);
     
-    return result.toDataStreamResponse();
+    // Set trace ID in response headers
+    const response = new Response(result.toDataStreamResponse().body, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'x-trace-id': requestTraceId
+      }
+    });
+    
+    return response;
   } catch (error) {
     const errorTime = performance.now();
     const totalErrorTime = (errorTime - totalStartTime).toFixed(2);
-    console.error(`❌ Error in chat route (after ${totalErrorTime}ms) [TraceID: ${traceId}]:`, error);
-    return new Response(JSON.stringify({ error: 'Internal Server Error', traceId }), {
+    console.error(`❌ Error in chat route (after ${totalErrorTime}ms) [TraceID: ${requestTraceId}]:`, error);
+    return new Response(JSON.stringify({ error: 'Internal Server Error', traceId: requestTraceId }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });

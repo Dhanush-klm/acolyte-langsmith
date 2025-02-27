@@ -353,6 +353,7 @@ export default function ChatPage() {
   const [selectedPersona] = useState('roleplay');
   const [instructionsShown, setInstructionsShown] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
+  const [currentTraceId, setCurrentTraceId] = useState<string | null>(null);
 
   const { messages, input, handleInputChange, handleSubmit, isLoading, reload, setMessages, setInput } = useChat({
     api: '/api/chat',
@@ -366,11 +367,18 @@ export default function ChatPage() {
       console.log('Response started:', response);
       setError(null);
       setIsQuestionSelected(false);
+      
+      // Store the trace ID from the response headers
+      const traceId = response.headers.get('x-trace-id');
+      if (traceId) {
+        console.log(`Received trace ID: ${traceId}`);
+        setCurrentTraceId(traceId);
+      }
     },
     onFinish: async (message) => {
       if (message.content.trim()) {
-        // Generate a trace ID for this completion
-        const traceId = crypto.randomUUID();
+        // Use the stored trace ID for the callback
+        const traceId = currentTraceId || crypto.randomUUID();
         
         console.log(`📊 Tracing completed response [TraceID: ${traceId}]`);
         
