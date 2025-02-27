@@ -367,7 +367,7 @@ export default function ChatPage() {
       setError(null);
       setIsQuestionSelected(false);
     },
-    onFinish: (message) => {
+    onFinish: async (message) => {
       if (message.content.trim()) {
         // Generate a trace ID for this completion
         const traceId = crypto.randomUUID();
@@ -375,7 +375,7 @@ export default function ChatPage() {
         console.log(`📊 Tracing completed response [TraceID: ${traceId}]`);
         
         // Send trace information back to the server
-        fetch('/api/chat', {
+        await fetch('/api/chat', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
