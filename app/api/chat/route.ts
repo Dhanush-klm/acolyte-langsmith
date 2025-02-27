@@ -1,13 +1,14 @@
 import { createMem0, addMemories } from '@mem0/vercel-ai-provider';
 import { streamText } from 'ai';
 import { Pool } from 'pg';
-import OpenAI from 'openai';
-import { traceable } from 'langsmith/traceable';
-import { AISDKExporter } from 'langsmith/vercel';
+import { OpenAI } from 'openai';
 import { wrapOpenAI } from 'langsmith/wrappers';
+import { traceable } from 'langsmith/traceable';
 
-// Initialize OpenAI client with tracing wrapper
-const openai = wrapOpenAI(new OpenAI({ apiKey: process.env.OPENAI_API_KEY }));
+// Initialize OpenAI client with LangSmith wrapper
+const openai = wrapOpenAI(new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+}));
 
 // Initialize PostgreSQL connection pool
 const pool = new Pool({
@@ -142,15 +143,20 @@ function isValidPersona(persona: any): persona is Persona {
 
 // Traceable function for logging final responses
 const traceResponse = traceable(
-  async (userId: string, userQuery: string, assistantResponse: string) => {
-    console.log('🔍 Tracing response in LangSmith');
+  async (userId: string, userQuery: string, assistantResponse: string, traceId?: string) => {
+    console.log(`🔍 Tracing response in LangSmith [TraceID: ${traceId || 'none'}]`);
     console.log(`🔹 User ID: ${userId}`);
     console.log(`🔹 User Query: "${userQuery}"`);
-    console.log(`🔹 Assistant Response (first 100 chars): "${assistantResponse.substring(0, 100)}..."`);
     console.log(`🔹 Assistant Response Length: ${assistantResponse.length} characters`);
-    return { userId, userQuery, assistantResponse };
+    return { userId, userQuery, assistantResponse, traceId };
   },
-  { name: "Completed Chat Response" }
+  { 
+    name: "Completed Chat Response",
+    metadata: {
+      environment: process.env.VERCEL_ENV || 'development',
+      runtime: 'edge'
+    }
+  }
 );
 
 // Store for user queries
@@ -158,8 +164,10 @@ const queryStore: Record<string, { query: string, timestamp: number }> = {};
 
 export async function POST(req: Request) {
   const totalStartTime = performance.now();
+  const traceId = crypto.randomUUID(); // Generate unique trace ID
+  
   try {
-    console.log('🚀 Starting request processing...');
+    console.log(`🚀 Starting request processing [TraceID: ${traceId}]...`);
     const body = await req.json();
     
     // Case 1: This is a tracing request after streaming is complete
@@ -173,10 +181,10 @@ export async function POST(req: Request) {
       // Clear the stored query
       delete queryStore[userId];
       
-      // Trace the completed response in LangSmith
-      await traceResponse(userId, userQuery, assistantResponse);
+      // Trace the completed response in LangSmith with the trace ID
+      await traceResponse(userId, userQuery, assistantResponse, traceId);
       
-      return new Response(JSON.stringify({ status: 'traced' }));
+      return new Response(JSON.stringify({ status: 'traced', traceId }));
     }
     
     // Case 2: Normal chat processing - store the query
@@ -271,10 +279,6 @@ Documentation Context: ${similarContent}`;
         user_id: userId,
       }),
       messages: updatedMessages,
-      experimental_telemetry: AISDKExporter.getSettings({
-        runName: 'chat-completion',
-        metadata: { type: 'chat' }
-      })
     });
 
     const responseEndTime = performance.now();
