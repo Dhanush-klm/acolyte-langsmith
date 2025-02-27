@@ -360,31 +360,68 @@ export async function POST(req: Request) {
       console.log(`- Query: "${tempStore.query.substring(0, 50)}..."`);
       console.log(`- Context length: ${tempStore.similarContent.length} characters`);
       
-      // Trace just the answer
-      await traceAnswer(body.completeAnswer);
+      // Create a nested tracing structure
+      const conversationTrace = await traceable(async () => {
+        // First, analyze just the answer
+        const answerAnalysis = await traceable(async () => {
+          console.log('💬 Analyzing answer:');
+          console.log(`- Length: ${body.completeAnswer.length} characters`);
+          console.log(`- Preview: "${body.completeAnswer.substring(0, 100)}..."`);
+          
+          // You can do additional answer analysis here if needed
+          const sentenceCount = body.completeAnswer.split(/[.!?]+/).length - 1;
+          const wordCount = body.completeAnswer.split(/\s+/).length;
+          
+          return {
+            answerLength: body.completeAnswer.length,
+            sentenceCount,
+            wordCount,
+            previewText: body.completeAnswer.substring(0, 150)
+          };
+        }, {
+          name: "AI Answer Analysis",
+          metadata: {
+            component: 'answer-analysis',
+            analysisType: 'text-metrics'
+          }
+        })();
+        
+        // Then log all components together
+        console.log('\n📊 FINAL CONVERSATION COMPONENTS:');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('📝 USER QUERY:');
+        console.log(tempStore.query);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('📚 CONTEXT:');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('💬 AI ANSWER:');
+        console.log(body.completeAnswer);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+        
+        return { 
+          query: tempStore.query, 
+          contextLength: tempStore.similarContent?.length || 0, 
+          answerLength: body.completeAnswer.length,
+          answerMetrics: answerAnalysis
+        };
+      }, {
+        name: "Complete Conversation Trace",
+        metadata: {
+          environment: process.env.VERCEL_ENV || 'development',
+          component: 'conversation-processing'
+        }
+      })();
       
-      // Trace the complete conversation (all three components)
-      await traceCompleteConversation(
-        tempStore.query, 
-        tempStore.similarContent, 
-        body.completeAnswer
-      );
-      
-      // Add additional detailed logging of all three components
-      await logFinalConversationState(
-        tempStore.query,
-        tempStore.similarContent,
-        body.completeAnswer
-      );
-      
-      console.log('✅ Successfully traced and logged conversation');
+      console.log('✅ Successfully traced conversation');
       
       // Clear the temporary store
       tempStore = {};
       console.log('🧹 Temporary store cleared');
       console.log('=== End Processing Complete Answer ===\n');
       
-      return new Response(JSON.stringify({ status: 'traced' }));
+      return new Response(JSON.stringify({ 
+        status: 'traced'
+      }));
     }
     
     // Case 2: Initial request - process and store
