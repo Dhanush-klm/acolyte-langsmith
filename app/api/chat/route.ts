@@ -311,12 +311,7 @@ const logFinalConversationState = traceable(async (query: string, context: strin
     answerSample: answer.substring(0, 100) + '...'
   };
 }, {
-  name: "Final Conversation State Log",
-  metadata: {
-    environment: process.env.VERCEL_ENV || 'development',
-    component: 'chat-completion',
-    logType: 'detailed-components'
-  }
+  name: "Final Conversation State Log"
 });
 
 export async function POST(req: Request) {
