@@ -264,26 +264,35 @@ function isValidPersona(persona: any): persona is Persona {
   return ['general', 'roleplay'].includes(persona);
 }
 
-// Traceable function for logging final responses
+// Update the queryStore to include similarContent
+const queryStore: Record<string, { query: string, similarContent: string, timestamp: number }> = {};
+
+// Traceable function for logging final responses with similarContent
 const traceResponse = traceable(
-  async (userId: string, userQuery: string, assistantResponse: string, traceId?: string) => {
+  async (userId: string, userQuery: string, assistantResponse: string, similarContent: string, traceId?: string) => {
     console.log(`🔍 Tracing response in LangSmith [TraceID: ${traceId || 'none'}]`);
     console.log(`🔹 User ID: ${userId}`);
     console.log(`🔹 User Query: "${userQuery}"`);
+    console.log(`🔹 Similar Content Length: ${similarContent.length} characters`);
     console.log(`🔹 Assistant Response Length: ${assistantResponse.length} characters`);
-    return { userId, userQuery, assistantResponse, traceId };
+    
+    return { 
+      userId, 
+      userQuery, 
+      assistantResponse, 
+      similarContentLength: similarContent.length,
+      traceId 
+    };
   },
   { 
     name: "Completed Chat Response",
     metadata: {
       environment: process.env.VERCEL_ENV || 'development',
-      runtime: 'edge'
+      runtime: 'edge',
+      source: 'frontend_callback'
     }
   }
 );
-
-// Store for user queries
-const queryStore: Record<string, { query: string, timestamp: number }> = {};
 
 export async function POST(req: Request) {
   const totalStartTime = performance.now();
@@ -297,15 +306,22 @@ export async function POST(req: Request) {
     if (body.traceResponse === true) {
       const { userId, assistantResponse } = body;
       
-      // Retrieve the original query from our store
+      // Retrieve the original query and similar content from our store
       const storedData = queryStore[userId];
       const userQuery = storedData?.query || "Unknown query";
+      const similarContent = storedData?.similarContent || "";
+      
+      // Log what we're tracing
+      console.log(`📝 Tracing complete response [TraceID: ${traceId}]`);
+      console.log(`🔹 Query: "${userQuery.substring(0, 100)}${userQuery.length > 100 ? '...' : ''}"`);
+      console.log(`🔹 Similar Content Length: ${similarContent.length} characters`);
+      console.log(`🔹 Assistant Response Length: ${assistantResponse.length} characters`);
       
       // Clear the stored query
       delete queryStore[userId];
       
-      // Trace the completed response in LangSmith with the trace ID
-      await traceResponse(userId, userQuery, assistantResponse, traceId);
+      // Trace the completed response in LangSmith with all data
+      await traceResponse(userId, userQuery, assistantResponse, similarContent, traceId);
       
       return new Response(JSON.stringify({ status: 'traced', traceId }));
     }
@@ -314,39 +330,43 @@ export async function POST(req: Request) {
     const { messages, userId } = body;
     const userQuery = messages[messages.length - 1].content;
     
-    // Store the user query for later retrieval when tracing
-    queryStore[userId] = {
-      query: userQuery,
-      timestamp: Date.now()
-    };
-    
-    // Continue with processing...
+    // Continue with normal processing...
     const persona: Persona = body.persona || 'general';
     const previousMessages = messages.slice(0, -1);
 
-    // Check if the query is a greeting
+    // Check if query is a greeting
     if (isGreeting(userQuery)) {
       console.log(`👋 Greeting detected, sending default response [TraceID: ${traceId}]`);
+      
+      // Store empty similar content for greetings
+      queryStore[userId] = {
+        query: userQuery,
+        similarContent: "",
+        timestamp: Date.now()
+      };
+      
       const result = await handleGreeting(userQuery, previousMessages, persona, userId);
       
       console.log(`👋 Greeting response sent [TraceID: ${traceId}]`);
       return result.toDataStreamResponse();
     }
 
-    // If not a greeting, proceed with normal processing
+    // Regular query processing
     console.log(`💬 Processing regular query... [TraceID: ${traceId}]`);
-    console.log(`🎭 Using ${persona} persona [TraceID: ${traceId}]`);
-
+    
     // Generate embedding directly from the original query
     const embedding = await getQueryEmbedding(userQuery);
 
     // Find similar content from the database
     const similarContent = await findSimilarContent(embedding);
-
-    // Start response generation
-    const responseStartTime = performance.now();
-    console.log(`💭 Starting response generation... [TraceID: ${traceId}]`);
-
+    
+    // Store the user query and similar content for later retrieval when tracing
+    queryStore[userId] = {
+      query: userQuery,
+      similarContent: similarContent,
+      timestamp: Date.now()
+    };
+    
     // Process messages and get response
     const { result } = await processMessages(
       messages, 
@@ -358,13 +378,11 @@ export async function POST(req: Request) {
     );
 
     const responseEndTime = performance.now();
-    const streamInitTime = (responseEndTime - responseStartTime).toFixed(2);
     const totalTime = (responseEndTime - totalStartTime).toFixed(2);
     
-    console.log(`⏱️ Stream initialization time: ${streamInitTime}ms [TraceID: ${traceId}]`);
     console.log(`⌛ Total processing time: ${totalTime}ms [TraceID: ${traceId}]`);
-
     console.log(`✅ Request processing complete! [TraceID: ${traceId}]`);
+    
     return result.toDataStreamResponse();
   } catch (error) {
     const errorTime = performance.now();
