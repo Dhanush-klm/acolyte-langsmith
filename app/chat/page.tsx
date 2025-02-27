@@ -410,23 +410,8 @@ export default function ChatPage() {
   }, [messages]);
 
   const logUserQuestion = async (question: string) => {
-    try {
-      const logData = {
-        userId,
-        timestamp: new Date().toISOString(),
-        question,
-      };
-
-      await fetch('/api/logging', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(logData),
-      });
-    } catch (error) {
-      console.error('Error logging question:', error);
-    }
+    // Function is now a no-op (does nothing)
+    return;
   };
 
   const enhancedSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -434,7 +419,7 @@ export default function ChatPage() {
     if (!input.trim() || isLoading) return;
 
     try {
-      await logUserQuestion(input.trim());
+      // Remove the logging call
       await handleSubmit(e);
     } catch (error) {
       console.error('Error submitting question:', error);
