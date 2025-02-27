@@ -314,6 +314,30 @@ const logFinalConversationState = traceable(async (query: string, context: strin
   name: "Final Conversation State Log"
 });
 
+// Add a traceable function just for the answer
+const traceAnswer = traceable(async (answer: string) => {
+  console.log('💬 Tracing answer:');
+  console.log(`- Length: ${answer.length} characters`);
+  console.log(`- Preview: "${answer.substring(0, 100)}..."`);
+  
+  // You can do additional answer analysis here if needed
+  const sentenceCount = answer.split(/[.!?]+/).length - 1;
+  const wordCount = answer.split(/\s+/).length;
+  
+  return {
+    answerLength: answer.length,
+    sentenceCount,
+    wordCount,
+    previewText: answer.substring(0, 150)
+  };
+}, {
+  name: "AI Answer Analysis",
+  metadata: {
+    component: 'answer-analysis',
+    analysisType: 'text-metrics'
+  }
+});
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -336,7 +360,10 @@ export async function POST(req: Request) {
       console.log(`- Query: "${tempStore.query.substring(0, 50)}..."`);
       console.log(`- Context length: ${tempStore.similarContent.length} characters`);
       
-      // Trace the complete conversation with all three components
+      // Trace just the answer
+      await traceAnswer(body.completeAnswer);
+      
+      // Trace the complete conversation (all three components)
       await traceCompleteConversation(
         tempStore.query, 
         tempStore.similarContent, 
