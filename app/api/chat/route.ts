@@ -264,16 +264,25 @@ function isValidPersona(persona: any): persona is Persona {
   return ['general', 'roleplay'].includes(persona);
 }
 
-// Store for temporary data
-const queryStore: Record<string, { 
-  query: string, 
-  similarContent: string, 
-  timestamp: number 
-}> = {};
+// Simple store for temporary data - just like in links API
+let tempStore: {
+  query?: string;
+  similarContent?: string;
+  userId?: string;
+} = {};
 
 // Traceable function to log the complete conversation
 const traceCompleteConversation = traceable(async (query: string, context: string, answer: string) => {
-  return { query, contextLength: context.length, answerLength: answer.length };
+  console.log('🔍 Tracing complete conversation:');
+  console.log(`📝 Query: "${query.substring(0, 100)}..."`);
+  console.log(`📚 Context length: ${context.length} characters`);
+  console.log(`💬 Answer length: ${answer.length} characters`);
+  
+  return { 
+    query, 
+    contextLength: context.length, 
+    answerLength: answer.length 
+  };
 }, {
   name: "Complete Conversation Trace",
   metadata: {
@@ -287,21 +296,35 @@ export async function POST(req: Request) {
     
     // Case 1: Frontend sending back the complete answer
     if (body.completeAnswer) {
-      const { userId, completeAnswer } = body;
+      console.log('\n=== Processing Complete Answer ===');
+      console.log('💬 Answer received from frontend');
       
-      // Retrieve stored query and context
-      const storedData = queryStore[userId];
-      if (!storedData) {
-        return new Response(JSON.stringify({ status: 'error', message: 'No stored query found' }));
+      // Check if we have stored query and context
+      if (!tempStore.query || !tempStore.similarContent) {
+        console.log('⚠️ No stored query or context found');
+        return new Response(JSON.stringify({ 
+          status: 'error', 
+          message: 'No stored query found' 
+        }));
       }
       
-      const { query, similarContent } = storedData;
+      console.log('✅ Found stored data:');
+      console.log(`- Query: "${tempStore.query.substring(0, 50)}..."`);
+      console.log(`- Context length: ${tempStore.similarContent.length} characters`);
       
-      // Trace the complete conversation (query, context, answer)
-      await traceCompleteConversation(query, similarContent, completeAnswer);
+      // Trace the complete conversation with all three components
+      await traceCompleteConversation(
+        tempStore.query, 
+        tempStore.similarContent, 
+        body.completeAnswer
+      );
       
-      // Clean up the store
-      delete queryStore[userId];
+      console.log('✅ Successfully traced conversation');
+      
+      // Clear the temporary store
+      tempStore = {};
+      console.log('🧹 Temporary store cleared');
+      console.log('=== End Processing Complete Answer ===\n');
       
       return new Response(JSON.stringify({ status: 'traced' }));
     }
@@ -309,18 +332,23 @@ export async function POST(req: Request) {
     // Case 2: Initial request - process and store
     const { messages, userId, persona: requestPersona } = body;
     const userQuery = messages[messages.length - 1].content;
-    const persona: Persona = requestPersona || 'general';
+    const persona = requestPersona || 'general';
+    
+    console.log('\n=== Processing Initial Request ===');
+    console.log(`📝 New query: "${userQuery.substring(0, 100)}..."`);
 
     // Generate embeddings and get similar content
     const embedding = await getQueryEmbedding(userQuery);
     const similarContent = await findSimilarContent(embedding);
-
+    console.log(`📚 Retrieved similar content: ${similarContent.length} characters`);
+    
     // Store query and context for later tracing
-    queryStore[userId] = {
+    tempStore = {
       query: userQuery,
       similarContent: similarContent,
-      timestamp: Date.now()
+      userId: userId
     };
+    console.log('💾 Stored query and context for later tracing');
     
     // Process messages and stream response
     const { result } = await processMessages(
@@ -332,6 +360,9 @@ export async function POST(req: Request) {
       userId
     );
     
+    console.log('✅ Request processed, streaming response');
+    console.log('=== End Processing Initial Request ===\n');
+    
     return new Response(result.toDataStreamResponse().body, {
       headers: {
         'Content-Type': 'text/event-stream',
@@ -340,7 +371,9 @@ export async function POST(req: Request) {
       }
     });
   } catch (error) {
-    console.error('Error processing request:', error);
+    console.error('❌ Error processing request:', error);
+    // Clear tempStore in case of error
+    tempStore = {};
     return new Response(JSON.stringify({ status: 'error', message: 'An error occurred' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
