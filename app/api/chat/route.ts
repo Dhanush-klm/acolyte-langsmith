@@ -3,11 +3,11 @@ import { streamText } from 'ai';
 import { Pool } from 'pg';
 import { OpenAI } from 'openai';
 import { traceable } from 'langsmith/traceable';
+import { AISDKExporter } from 'langsmith/vercel';
+import { wrapOpenAI } from 'langsmith/wrappers';
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Initialize OpenAI client with tracing wrapper
+const openai = wrapOpenAI(new OpenAI({ apiKey: process.env.OPENAI_API_KEY }));
 
 // Initialize PostgreSQL connection pool
 const pool = new Pool({
@@ -271,6 +271,10 @@ Documentation Context: ${similarContent}`;
         user_id: userId,
       }),
       messages: updatedMessages,
+      experimental_telemetry: AISDKExporter.getSettings({
+        runName: 'chat-completion',
+        metadata: { type: 'chat' }
+      })
     });
 
     const responseEndTime = performance.now();
