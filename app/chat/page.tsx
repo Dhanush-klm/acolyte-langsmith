@@ -377,23 +377,13 @@ export default function ChatPage() {
     },
     onFinish: async (message) => {
       if (message.content.trim()) {
-        // Use the stored trace ID for the callback
-        const traceId = currentTraceId || crypto.randomUUID();
-        
-        console.log(`📊 Tracing completed response [TraceID: ${traceId}]`);
-        
-        // Send trace information back to the server
+        // Send the complete answer back to the backend
         await fetch('/api/chat', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Trace-ID': traceId
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            traceResponse: true,
-            userId,
-            assistantResponse: message.content,
-            traceId
+            completeAnswer: message.content,
+            userId
           }),
         });
       }

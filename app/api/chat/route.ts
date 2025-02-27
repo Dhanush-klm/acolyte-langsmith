@@ -264,145 +264,65 @@ function isValidPersona(persona: any): persona is Persona {
   return ['general', 'roleplay'].includes(persona);
 }
 
-// Create a trace store to link initial requests with final responses
-const traceStore: Record<string, { 
-  traceId: string,
-  userId: string, 
+// Store for temporary data
+const queryStore: Record<string, { 
   query: string, 
-  similarContent: string,
-  startTime: number
+  similarContent: string, 
+  timestamp: number 
 }> = {};
 
-// Traceable function for logging final responses with similarContent
-const traceResponse = traceable(
-  async (userId: string, userQuery: string, assistantResponse: string, similarContent: string, parentTraceId?: string) => {
-    console.log(`🔍 Tracing complete response [Parent TraceID: ${parentTraceId || 'none'}]`);
-    console.log(`🔹 User Query: "${userQuery}"`);
-    console.log(`🔹 Assistant Response: "${assistantResponse.substring(0, 100)}..."`);
-    
-    return { 
-      userId, 
-      userQuery, 
-      assistantResponse, 
-      similarContentLength: similarContent.length,
-      parentTraceId 
-    };
-  },
-  { 
-    name: "Completed Chat Response",
-    metadata: {
-      environment: process.env.VERCEL_ENV || 'development',
-      runtime: 'edge',
-      source: 'frontend_callback'
-    }
+// Traceable function to log the complete conversation
+const traceCompleteConversation = traceable(async (query: string, context: string, answer: string) => {
+  return { query, contextLength: context.length, answerLength: answer.length };
+}, {
+  name: "Complete Conversation Trace",
+  metadata: {
+    environment: process.env.VERCEL_ENV || 'development'
   }
-);
+});
 
 export async function POST(req: Request) {
-  // Generate a trace ID for this request to link initial request with final response
-  const requestTraceId = req.headers.get('x-trace-id') || crypto.randomUUID();
-  const totalStartTime = performance.now();
-  
   try {
-    console.log(`🚀 Starting request processing [TraceID: ${requestTraceId}]...`);
     const body = await req.json();
     
-    // Case 1: This is a tracing request after streaming is complete
-    if (body.traceResponse === true) {
-      const { userId, assistantResponse, traceId: frontendTraceId } = body;
+    // Case 1: Frontend sending back the complete answer
+    if (body.completeAnswer) {
+      const { userId, completeAnswer } = body;
       
-      // Try to find the original trace info from our store
-      const originalTraceInfo = Object.values(traceStore).find(
-        info => info.userId === userId && Date.now() - info.startTime < 300000 // 5 minute window
-      );
-      
-      if (!originalTraceInfo) {
-        console.warn(`⚠️ Could not find original trace for userId: ${userId}`);
-        return new Response(JSON.stringify({ 
-          status: 'error', 
-          message: 'Original trace not found'
-        }));
+      // Retrieve stored query and context
+      const storedData = queryStore[userId];
+      if (!storedData) {
+        return new Response(JSON.stringify({ status: 'error', message: 'No stored query found' }));
       }
       
-      // Extract original trace data
-      const { traceId: originalTraceId, query: userQuery, similarContent } = originalTraceInfo;
+      const { query, similarContent } = storedData;
       
-      // Log what we're tracing
-      console.log(`📝 Tracing complete response`);
-      console.log(`🔹 Original TraceID: ${originalTraceId}`);
-      console.log(`🔹 Frontend TraceID: ${frontendTraceId || 'none'}`);
-      console.log(`🔹 Query: "${userQuery.substring(0, 100)}${userQuery.length > 100 ? '...' : ''}"`);
-      console.log(`🔹 Response Length: ${assistantResponse.length} characters`);
+      // Trace the complete conversation (query, context, answer)
+      await traceCompleteConversation(query, similarContent, completeAnswer);
       
-      // Remove from trace store
-      delete traceStore[originalTraceId];
+      // Clean up the store
+      delete queryStore[userId];
       
-      // Trace the completed response in LangSmith with parent trace ID
-      await traceResponse(
-        userId, 
-        userQuery, 
-        assistantResponse, 
-        similarContent, 
-        originalTraceId  // Link to original trace
-      );
-      
-      return new Response(JSON.stringify({ 
-        status: 'traced', 
-        originalTraceId,
-        frontendTraceId 
-      }));
+      return new Response(JSON.stringify({ status: 'traced' }));
     }
     
-    // Case 2: Normal chat processing - store the query and trace info
-    const { messages, userId } = body;
+    // Case 2: Initial request - process and store
+    const { messages, userId, persona: requestPersona } = body;
     const userQuery = messages[messages.length - 1].content;
-    
-    // Continue with normal processing...
-    const persona: Persona = body.persona || 'general';
-    const previousMessages = messages.slice(0, -1);
+    const persona: Persona = requestPersona || 'general';
 
-    // Check if query is a greeting
-    if (isGreeting(userQuery)) {
-      console.log(`👋 Greeting detected, sending default response [TraceID: ${requestTraceId}]`);
-      
-      // Store trace info for greetings too
-      traceStore[requestTraceId] = {
-        traceId: requestTraceId,
-        userId,
-        query: userQuery,
-        similarContent: "",
-        startTime: Date.now()
-      };
-      
-      const result = await handleGreeting(userQuery, previousMessages, persona, userId);
-      
-      // Set trace ID in response headers
-      const response = result.toDataStreamResponse();
-      response.headers.set('x-trace-id', requestTraceId);
-      
-      console.log(`👋 Greeting response sent [TraceID: ${requestTraceId}]`);
-      return response;
-    }
-
-    // Regular query processing
-    console.log(`📝 Processing query [TraceID: ${requestTraceId}]: "${userQuery.substring(0, 100)}${userQuery.length > 100 ? '...' : ''}"`);
-    
-    // Generate embedding directly from the original query
+    // Generate embeddings and get similar content
     const embedding = await getQueryEmbedding(userQuery);
-
-    // Find similar content from the database
     const similarContent = await findSimilarContent(embedding);
-    
-    // Store trace info
-    traceStore[requestTraceId] = {
-      traceId: requestTraceId,
-      userId,
+
+    // Store query and context for later tracing
+    queryStore[userId] = {
       query: userQuery,
       similarContent: similarContent,
-      startTime: Date.now()
+      timestamp: Date.now()
     };
     
-    // Process messages and get response
+    // Process messages and stream response
     const { result } = await processMessages(
       messages, 
       userQuery, 
@@ -411,31 +331,19 @@ export async function POST(req: Request) {
       similarContent,
       userId
     );
-
-    const responseEndTime = performance.now();
-    const totalTime = (responseEndTime - totalStartTime).toFixed(2);
     
-    console.log(`⌛ Total processing time: ${totalTime}ms [TraceID: ${requestTraceId}]`);
-    console.log(`✅ Request processing complete! [TraceID: ${requestTraceId}]`);
-    
-    // Set trace ID in response headers
-    const response = new Response(result.toDataStreamResponse().body, {
+    return new Response(result.toDataStreamResponse().body, {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'x-trace-id': requestTraceId
+        'Connection': 'keep-alive'
       }
     });
-    
-    return response;
   } catch (error) {
-    const errorTime = performance.now();
-    const totalErrorTime = (errorTime - totalStartTime).toFixed(2);
-    console.error(`❌ Error in chat route (after ${totalErrorTime}ms) [TraceID: ${requestTraceId}]:`, error);
-    return new Response(JSON.stringify({ error: 'Internal Server Error', traceId: requestTraceId }), {
+    console.error('Error processing request:', error);
+    return new Response(JSON.stringify({ status: 'error', message: 'An error occurred' }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' }
     });
   }
 }
