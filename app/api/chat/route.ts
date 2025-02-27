@@ -2,6 +2,7 @@ import { createMem0, addMemories } from '@mem0/vercel-ai-provider';
 import { streamText } from 'ai';
 import { Pool } from 'pg';
 import { OpenAI } from 'openai';
+import { traceable } from 'langsmith/traceable';
 
 // Initialize OpenAI client
 const openai = new OpenAI({
@@ -79,7 +80,7 @@ Clarity & Structure
 •	1: Hard to follow or confusing. 
 ✅ Passing Score: 6+ out of 8 
 Example Response:  
-Drug pricing benchmarks are essential in pharmacy benefits consulting as they determine how pharmacies are reimbursed and influence overall drug costs. AWP (Average Wholesale Price) is a benchmark for estimating drug prices, though often inflated. WAC (Wholesale Acquisition Cost) is the manufacturer’s list price before rebates. MAC (Maximum Allowable Cost) limits reimbursement for generics, while NADAC (National Average Drug Acquisition Cost) reflects actual pharmacy costs. Consultants use these benchmarks to negotiate pricing, optimize formulary management, and control plan costs effectively.
+Drug pricing benchmarks are essential in pharmacy benefits consulting as they determine how pharmacies are reimbursed and influence overall drug costs. AWP (Average Wholesale Price) is a benchmark for estimating drug prices, though often inflated. WAC (Wholesale Acquisition Cost) is the manufacturer's list price before rebates. MAC (Maximum Allowable Cost) limits reimbursement for generics, while NADAC (National Average Drug Acquisition Cost) reflects actual pharmacy costs. Consultants use these benchmarks to negotiate pricing, optimize formulary management, and control plan costs effectively.
 `
 };
 
@@ -139,13 +140,57 @@ function isValidPersona(persona: any): persona is Persona {
   return ['general', 'roleplay'].includes(persona);
 }
 
+// Traceable function for logging final responses
+const traceResponse = traceable(
+  async (userId: string, userQuery: string, assistantResponse: string) => {
+    console.log('🔍 Tracing response in LangSmith');
+    console.log(`🔹 User ID: ${userId}`);
+    console.log(`🔹 User Query: "${userQuery}"`);
+    console.log(`🔹 Assistant Response (first 100 chars): "${assistantResponse.substring(0, 100)}..."`);
+    console.log(`🔹 Assistant Response Length: ${assistantResponse.length} characters`);
+    return { userId, userQuery, assistantResponse };
+  },
+  { name: "Completed Chat Response" }
+);
+
+// Store for user queries
+const queryStore: Record<string, { query: string, timestamp: number }> = {};
+
 export async function POST(req: Request) {
   const totalStartTime = performance.now();
   try {
     console.log('🚀 Starting request processing...');
-    const { messages, userId, persona: rawPersona = 'general' } = await req.json();
-    const persona = isValidPersona(rawPersona) ? rawPersona : 'general';
+    const body = await req.json();
+    
+    // Case 1: This is a tracing request after streaming is complete
+    if (body.traceResponse === true) {
+      const { userId, assistantResponse } = body;
+      
+      // Retrieve the original query from our store
+      const storedData = queryStore[userId];
+      const userQuery = storedData?.query || "Unknown query";
+      
+      // Clear the stored query
+      delete queryStore[userId];
+      
+      // Trace the completed response in LangSmith
+      await traceResponse(userId, userQuery, assistantResponse);
+      
+      return new Response(JSON.stringify({ status: 'traced' }));
+    }
+    
+    // Case 2: Normal chat processing - store the query
+    const { messages, userId } = body;
     const userQuery = messages[messages.length - 1].content;
+    
+    // Store the user query for later retrieval when tracing
+    queryStore[userId] = {
+      query: userQuery,
+      timestamp: Date.now()
+    };
+    
+    // Continue with processing...
+    const persona: Persona = body.persona || 'general';
     const previousMessages = messages.slice(0, -1);
 
     // Check if the query is a greeting

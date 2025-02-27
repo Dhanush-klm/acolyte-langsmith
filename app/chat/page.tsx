@@ -367,6 +367,21 @@ export default function ChatPage() {
       setError(null);
       setIsQuestionSelected(false);
     },
+    onFinish: (message) => {
+      if (message.content.trim()) {
+        fetch('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            traceResponse: true,
+            userId,
+            assistantResponse: message.content,
+          }),
+        });
+      }
+    },
     onError: (error) => {
       console.error('Chat error:', error);
       setError('Failed to process your request. Please try again.');
