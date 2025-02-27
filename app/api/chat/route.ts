@@ -1,7 +1,7 @@
 import { createMem0, addMemories } from '@mem0/vercel-ai-provider';
 import { streamText } from 'ai';
 import { Pool } from 'pg';
-import { OpenAI } from 'openai';
+import OpenAI from 'openai';
 import { traceable } from 'langsmith/traceable';
 import { AISDKExporter } from 'langsmith/vercel';
 import { wrapOpenAI } from 'langsmith/wrappers';
